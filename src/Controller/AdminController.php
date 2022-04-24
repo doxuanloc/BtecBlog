@@ -4,189 +4,186 @@ namespace App\Controller;
 
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\Response;
-use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\Routing\Annotation\Route;
-use Doctrine\Persistence\ManagerRegistry;
 use App\Entity\Post;
-use App\Form\CreateCategoryType;
-use App\Form\CreateContentType;
-use App\Repository\CategoryRepository;
-use Doctrine\Common\Collections\ArrayCollection;
-use App\shared\Common;
 use App\Entity\Category;
-use App\Controller\CommonController;
-use ArrayObject;
-
- class AdminController extends AbstractController
+use App\Form\PostType;
+use App\Form\CategoryType;
+use Symfony\Component\HttpFoundation\Request;
+use Doctrine\Persistence\ManagerRegistry;
+use Symfony\Component\String\Slugger\SluggerInterface;
+use App\Repository\CategoryRepository;
+use App\Repository\PostRepository;
+use Doctrine\ORM\EntityManagerInterface;
+use Symfony\Component\HttpFoundation\File\Exception\FileException;
+class AdminController extends AbstractController
 {
-
-     /**
-     * @Route("/list/blog",name="list_content", methods={"GET", "POST"})
-     */
-    public function getListContent():Response{
-        $category = $this -> forward('App\Controller\CommonController::getManyCategory');
-        $data = $this -> forward('App\Controller\CommonController::getManyContent');
-        return $this -> render('admin/managamentBlog.html.twig',['data' => $data, 'category'=>$category]);
+    private $em;
+    private $categoryRepository;
+    private $postRepository;
+    
+    public function __construct(CategoryRepository $categoryRepository, PostRepository $postRepository, EntityManagerInterface $em){
+        $this-> categoryRepository = $categoryRepository;
+        $this-> postRepository = $postRepository;
+        $this -> em = $em;
+    }
+    #[Route('/admin/home',name:'app_home', methods:['GET'])]
+    public function index():Response{
+        return $this->render('admin/index.html.twig');
+    }
+    #[Route('/admin/list/blog',name:'list_blog', methods:['GET'])]
+    public function getAllBlogAction():Response {
+       
+        return $this -> render('admin/listBlog.html.twig',['list_blog'=>$this->postRepository->findAll()]);
     }
 
-    /**
-     * @Route("/list/blog/{id}",name="one_content")
-     */
-    public function getAContent($id):Response{
-        $data = $this -> forward('App\Controller\CommonController::getOneContent',['id'=>$id]);
-        return $this -> render('admin/detailBlog.html.twig',['data',$data]);
+    #[Route('/admin/list/category',name:'list_category', methods:['GET'])]
+    public function getAllCategoryAction():Response {
+        return $this -> render('admin/listCategory.html.twig',['list_category'=>$this->categoryRepository->findAll()]);
     }
 
-    /**
-     * @Route("/list/category",name="list_cateogry")
-     */
-    public function getListCategory():Response{
-        $data = $this -> forward('App\Controller\CommonController::getManyCategory');
-        return $this -> render('admin/managementCategory.html.twig',['category'=>$data]);
+    #[Route('/admin/list/blog/{id}',name:'one_blog', methods:['GET'])]
+    public function getOneBlogAction($id):Response {
+        $data = $this->postRepository->find($id);
+        $cateId = $data -> getCategoryId();
+        return $this -> render('admin/oneBlog.html.twig',[
+            'one_blog'=>$data,
+            'category' => $this -> categoryRepository->find($cateId)
+        ]);
     }
 
-    /**
-     * @Route("/list/category/${id}",name="one_category")
-     */
-    public function getACategory($id):Response{
-        // $data =$this -> container->get('Common') -> getOneCategory($id);
-        $data = $this -> forward('App\Controller\CommonController::getOneContent',['id'=>$id]);
-        return $this -> render('admin/index.html.twig',['data'=>$data]);
+    #[Route('/admin/list/category/{id}',name:'one_category', methods:['GET'])]
+    public function getOneCateAction($id):Response {
+        return $this -> render('admin/oneCate.html.twig',['one_category'=>$this->categoryRepository->find($id)]);
     }
 
-    /**
-     * @Route("/create/blog",name="create_content", methods = {"GET", "POST"})
-     */
-    public function createContentAction(Request $req):Response{
-        $Post = new Post();
-        $form = $this->createForm(CreateContentType::class,$Post);
-        if($this->isSaveContent($form,$req,$Post)){
-            $this -> addFlash(
-                'Post',
-                'Add Success'
-            );
+    #[Route('/admin/create/blog', name: 'create_blog', methods:['GET','POST'])]
+    public function createBlogAction(Request $request): Response
+    {
+        $post = new Post();
+        $form = $this->createForm(PostType::class, $post);
+        $form->handleRequest($request);
+        if($form->isSubmitted() && $form->isValid()){
+            $newBlog = $form->getData();
+            $imgPath = $form->get('image')->getData();
+
+            if($imgPath){
+                $newFileName = uniqid(). '.' . $imgPath->guessExtension();
+
+                try{
+                    $imgPath->move($this -> getParameter('kernel.project_dir').'/public/uploads', $newFileName);
+                }
+                catch(FileException $e){
+                    return new Response($e->getMessage());
+                }
+                $newBlog->setImage('/uploads/' . $newFileName);
+
+                
+            }
+            $this -> em -> persist($newBlog);
+            $this -> em -> flush();
+
+            return $this -> redirectToRoute('list_blog');
         }
+
         return $this->render('admin/createBlog.html.twig', [
-            'form' => $form->createView()
-          ]);
+            'form' => $form->createView(),
+        ]);
     }
 
-
-     /**
-     * @Route("/create/category",name="category", methods = {"GET", "POST"})
-     */
-    public function createCategoryAction(Request $req):Response{
+    #[Route('/admin/create/category', name: 'create_category', methods:['GET','POST'])]
+    public function createCategoryAction(Request $request): Response
+    {
         $category = new Category();
-        $form = $this->createForm(CreateCategoryType::class,$category);
-        if($this->isSaveCategory($form,$req,$category)){
-            $this -> addFlash(
-                'Category',
-                'Add Success'
-            );
-          
-        }
-        return $this->render('admin/createCateogry.html.twig', [
-            'form' => $form->createView()
-          ]);
-    }
-
-     /**
-     * @Route("/details/cateogry/{id}",name="update_category")
-     */
-    public function updateCateogryAction(Request $req,$id):Response{
-      $doctrine = new ManagerRegistry();
-      $em = $doctrine->getManager();
-      $category = $em -> getRepository(Category::class)->findOneBy($id);
-      $form = $this -> createForm(CreateCategoryType::class,$category);
-      if($this->isSaveCategory($form,$req,$category)){
-          $this -> addFlash(
-              'Alert',
-              'Updated Category Successfully'
-          );
-          return $this -> redirectToRoute('admin');
-      }
-    }
-
-     /**
-     * @Route("/details/blog/{id}",name="update_content")
-     */
-    public function updateContentAction(Request $req,$id):Response{
-        $doctrine = new ManagerRegistry();
-        $em = $doctrine->getManager();
-        $content = $em -> getRepository(Post::class)->findOneBy($id);
-        $form = $this -> createForm(CreateCategoryType::class,$content);
-        if($this->isSaveCategory($form,$req,$content)){
-            $this -> addFlash(
-                'Alert',
-                'Updated Content Successfully'
-            );
-            return $this -> redirectToRoute('admin');
-        }
-      }
-
-
-     /**
-     * @Route("/blog/{id}",name="update_content", methods = {"GET","POST"})
-     */
-    public function deleteContentAction($id) {
-        $doctrine = new ManagerRegistry();
-        $em = $doctrine -> getManager();
-        $content = $em -> getRepository(Post::class) -> findOneBy($id);
-        $em -> remove($content);
-        $em -> flush();
-        $this -> addFlash(
-            'Alert',
-            'Delete content successfully!'
-        );
-    } 
-
-    /**
-     * @Route("/cateogry/{id}",name="update_category", methods = {"GET","POST"})
-     */
-
-    public function deleteCategoryAction($id) {
-        $doctrine = new ManagerRegistry();
-        $em = $doctrine -> getManager();
-        $category = $em -> getRepository(Category::class) -> findOneBy($id);
-        $em -> remove($category);
-        $em -> flush();
-        $this -> addFlash(
-            'Alert',
-            'Delete category successfully!'
-        );
-    } 
-
-   
-
-    public function isSaveContent($form, $req, $content){
-        $form->handleRequest($req);
+        $form = $this->createForm(CategoryType::class, $category);
+        $form->handleRequest($request);
         if($form->isSubmitted() && $form->isValid()){
-            $content -> setAuthorId($req -> request -> get(Post::class)['authorId']);
-            $content -> setCategoryId($req -> request -> get(Post::class)['categoryId']);
-            $content -> setTitle($req -> request -> get(Post::class)['title']);
-            $content -> setSummary($req -> request -> get(Post::class)['summary']);
-            $content -> setContent($req -> request -> get(Post::class)['content']);
-            $doctrine = new ManagerRegistry();
-            $em = $doctrine ->getManager();
-            $em -> persist($content);
-            $em -> flush();
-            return true;
+            $newCat = $form->getData();
+            $this -> em -> persist($newCat);
+            $this -> em -> flush();
+            return $this -> redirectToRoute('list_category');
         }
-        return false;
+
+        return $this->render('admin/createCategory.html.twig', [
+            'form' => $form->createView(),
+        ]);
     }
 
-    public function isSaveCategory($form, $req, $content){
-        $form->handleRequest($req);
+    #[Route('/admin/update/blog/{id}', name: 'update_blog')]
+    public function updateBlogAction($id, Request $request): Response
+    {
+        $data = $this -> postRepository -> find($id);
+        $form = $this->createForm(PostType::class, $data);
+        $form->handleRequest($request);
+        $imgPath = $form->get('image')->getData();
         if($form->isSubmitted() && $form->isValid()){
-            $content -> setTitle($req -> request -> get(Cateogry::class)['title']);
-            $doctrine = new ManagerRegistry();
-            $em = $doctrine ->getManager();
-            $em -> persist($content);
-            $em -> flush();
-            return true;
+            
+            if($imgPath){
+              if($data -> getImage() !== null ) {
+                  if(!file_exists($this -> getParameter('kernel.project_dir') . $data -> getImage())){
+                    
+                    $this -> getParameter('kernel.project_dir') . $data->getImage();
+                    $newFileName = uniqid(). '.' . $imgPath->guessExtension();
+                  
+                    try{
+                        $imgPath->move($this -> getParameter('kernel.project_dir').'/public/uploads', $newFileName);
+                        
+                    }
+                    catch(FileException $e){
+                        return new Response($e->getMessage());
+                    }
+                    $data->setImage('/uploads/' . $newFileName);
+                    $this -> em -> flush();
+                    return $this -> redirectToRoute('list_blog');
+                  }
+              }
+
+                
+            }
+            else{
+                $data -> setTitle($form->get('title')->getData());
+                $data -> setCategoryId($form->get('categoryId')->getData());
+                $data -> setContent($form->get('content')->getData());
+                $data -> setSummary($form->get('summary')->getData());
+                $this -> em -> flush();
+                return $this -> redirectToRoute('list_blog');
+            }
+            // $this -> em -> persist($newBlog);
+            // $this -> em -> flush();
         }
-        return false;
+
+        return $this->render('admin/updateBlog.html.twig', [
+            'form' => $form->createView(),
+            'data'=>$data,
+        ]);
     }
 
+    #[Route('/admin/update/category/{id}', name: 'update_category')]    
+    public function updateCategoryAction($id, Request $request){
+        $category = $this -> categoryRepository -> find($id);
+        $form = $this -> createForm(CategoryType::class, $category);
+        $form->handleRequest($request);
+        if($form->isSubmitted() && $form->isValid()){
+            $category -> setTitle($form->get('title')->getData());
+            $this -> em -> flush();
+            return $this -> redirectToRoute('list_category');
+        }
+        return $this -> render('admin/updateCate.html.twig',['form' => $form->createView(),'category'=>$category]);
+    }
 
+    #[Route('/admin/delete/blog/{id}', name: 'delete_blog', methods:['GET','DELETE'])] 
+    public function deleteBlogAction($id):Response{
+        $blog = $this->postRepository -> find($id);
+        $this -> em -> remove($blog);
+        $this -> em -> flush();
+        return $this -> redirectToRoute('list_blog');
+    }
+
+    #[Route('/admin/delete/category/{id}', name: 'delete_category', methods:['GET','DELETE'])] 
+    public function deleteCategoryAction($id):Response{
+        $cate = $this->categoryRepository -> find($id);
+        $this -> em -> remove($cate);
+        $this -> em -> flush();
+        return $this -> redirectToRoute('list_category');
+    }
 }
